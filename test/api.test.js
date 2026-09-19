@@ -112,9 +112,15 @@ before(async () => {
   globalThis.CID = cid;
 });
 
-after(() => {
+after(async () => {
   server?.close();
-  d1?.close();
+  // 驱动关闭：SQLite 需要显式 close，MySQL 需要 end 连接池
+  const drv = d1;
+  if (drv && typeof drv.close === 'function') {
+    try {
+      await drv.close();
+    } catch { /* 忽略关闭异常 */ }
+  }
 });
 
 // ===================================================================== 测试

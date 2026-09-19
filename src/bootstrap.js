@@ -10,18 +10,48 @@ import { fileURLToPath } from 'node:url';
 
 import { createApp } from './app.js';
 import { Db } from './db.js';
-import { LocalD1, runSqlScript } from './dev-d1.js';
+import { createDriver, createSqliteDriver } from './drivers.js';
 import { hashPassword } from './security.js';
 
 export const ROOT = path.join(path.dirname(fileURLToPath(import.meta.url)), '..');
 
-/** 建库 + 应用建表脚本 */
-export function initDatabase({ file = ':memory:' } = {}) {
-  if (file !== ':memory:') fs.mkdirSync(path.dirname(file), { recursive: true });
-  const d1 = new LocalD1(file);
-  const schema = fs.readFileSync(path.join(ROOT, 'migrations', '0001_schema.sql'), 'utf8');
-  const statements = runSqlScript(d1, schema);
-  return { d1, db: new Db(d1), statements };
+/** 读取 schema SQL（唯一事实来源：SQLite/D1 方言） */
+export function readSchemaSql() {
+  return fs.readFileSync(path.join(ROOT, 'migrations', '0001_schema.sql'), 'utf8');
+}
+
+/**
+ * 建库 + 应用建表脚本
+ *
+ * @param {object} opts
+ * @param {string} [opts.file]     本地 SQLite 文件（默认内存）
+ * @param {object} [opts.driver]   直接传入驱动（例如 D1 / MySQL）
+ * @param {boolean} [opts.schema]  是否执行建表脚本（D1/MySQL 迁移通常单独执行）
+ */
+export async function initDatabase({ file = ':memory:', driver = null, schema = true } = {}) {
+  let drv = driver;
+  if (!drv) {
+    if (file !== ':memory:') fs.mkdirSync(path.dirname(file), { recursive: true });
+    drv = await createSqliteDriver(file);
+  }
+  const db = new Db(drv);
+  let statements = 0;
+  if (schema) statements = await db.execScript(readSchemaSql());
+  return { driver: drv, db, statements };
+}
+
+/** 按环境装配驱动：d1 绑定 > LEARNHUB_DB_DRIVER > 本地 sqlite */
+export async function initDatabaseFromEnv({ env = {}, d1 = null, file = ':memory:', schema = true } = {}) {
+  const driver = String(env.LEARNHUB_DB_DRIVER || '').toLowerCase();
+
+  // 本地 SQLite 落盘时，必须在打开文件之前把父目录建好，否则 SQLite 直接报
+  // "unable to open database file"。之前把 mkdir 放在驱动创建之后，顺序错了。
+  if (!d1 && driver !== 'mysql' && file !== ':memory:') {
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+  }
+
+  const drv = await createDriver({ d1, env, fallbackSqliteFile: file });
+  return initDatabase({ driver: drv, schema });
 }
 
 const KPS = [
@@ -143,8 +173,12 @@ export async function seedDemoData(db) {
 }
 
 /** 组装好的应用 + 数据库（本地开发与测试共用） */
-export async function bootstrap({ file = ':memory:', env = {}, readStatic = null, seed = true } = {}) {
-  const { d1, db, statements } = initDatabase({ file });
+export async function bootstrap({
+  file = ':memory:', env = {}, readStatic = null, seed = true, driver = null, schema = true,
+} = {}) {
+  const { driver: drv, db, statements } = driver
+    ? await initDatabase({ driver, schema })
+    : await initDatabaseFromEnv({ env, file, schema });
   if (seed) await seedDemoData(db);
   const baseEnv = {
     LEARNHUB_SECRET: 'dev-only-change-me-in-production',
@@ -155,5 +189,5 @@ export async function bootstrap({ file = ':memory:', env = {}, readStatic = null
     ...env,
   };
   const app = createApp({ db, env: baseEnv, readStatic });
-  return { app, db, d1, env: baseEnv, statements };
+  return { app, db, d1: drv, driver: drv, env: baseEnv, statements };
 }

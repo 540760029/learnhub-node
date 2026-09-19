@@ -620,11 +620,18 @@ export function createApp({ db, env, readStatic = null }) {
     const { role, user } = await requireCourse(c, a.course_id);
     if (role !== 'student') throw httpError(403, '只有学生可以提交作业');
     const content = String((await c.body()).content || '');
-    await db.run(
-      `INSERT INTO submissions (assignment_id, student_id, content, submitted_at) VALUES (?,?,?,?)
-         ON CONFLICT(assignment_id, student_id) DO UPDATE SET
-           content = excluded.content, submitted_at = excluded.submitted_at`,
-      a.id, user.id, content, nowIso());
+    // 用通用的「先更新、没命中再插入」，兼容 SQLite 与 MySQL 两种方言
+    await db.upsert({
+      table: 'submissions',
+      keyColumns: ['assignment_id', 'student_id'],
+      values: {
+        assignment_id: a.id,
+        student_id: user.id,
+        content,
+        submitted_at: nowIso(),
+      },
+      updateColumns: ['content', 'submitted_at'],
+    });
     const sub = await db.first(
       'SELECT * FROM submissions WHERE assignment_id = ? AND student_id = ?', a.id, user.id);
     return c.json({ ok: true, id: sub.id });

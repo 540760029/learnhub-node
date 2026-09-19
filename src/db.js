@@ -1,13 +1,13 @@
 /**
- * 数据访问层 —— 基于 Cloudflare D1 binding
+ * 数据访问层 —— 面向「驱动接口」而非某个具体数据库
  *
- * 只做三件事：薄封装 D1、统一的 JSON 字段解析、几个业务读写辅助。
- * 不引 ORM：D1 是 SQLite 语义，裸 SQL 反而更直观，也不会有驱动兼容问题。
+ * 驱动由 src/drivers.js 提供，三种实现接口一致：
+ *   · d1     Cloudflare D1（生产：Cloudflare）
+ *   · sqlite 本地开发（node:sqlite）
+ *   · mysql  国内云（mysql2）
  *
- * D1 API 备忘：
- *   db.prepare(sql).bind(...args).first()   -> 单行对象或 null
- *   db.prepare(sql).bind(...args).all()     -> { results: [...] }
- *   db.prepare(sql).bind(...args).run()     -> { success, meta: { last_row_id, changes } }
+ * 本层只做三件事：薄封装驱动、统一 JSON 字段解析、业务读写辅助。
+ * 刻意不引 ORM —— 裸 SQL 更直观，也便于在不同方言间做适配。
  */
 
 export function nowIso() {
@@ -18,7 +18,7 @@ export function today() {
   return new Date().toISOString().slice(0, 10);
 }
 
-/** JSON 字段解析：D1 里存的是 TEXT */
+/** JSON 字段解析：数据库里存的是文本 */
 export function parseJson(value, fallback = null) {
   if (value === null || value === undefined || value === '') return fallback;
   if (typeof value !== 'string') return value;
@@ -33,30 +33,85 @@ export function toJson(value) {
   return value === undefined || value === null ? null : JSON.stringify(value);
 }
 
+/**
+ * 生成 upsert 语句（两种方言通用写法）
+ *
+ * 用 UPDATE-then-INSERT 而不是 ON CONFLICT / ON DUPLICATE KEY：
+ * 后两者语法不同（SQLite: ON CONFLICT ... excluded.x；MySQL: ON DUPLICATE KEY ... VALUES(x)），
+ * 而"先试更新、影响行数为 0 再插入"在两边语义完全一致，也不需要维护两套 SQL。
+ */
 export class Db {
-  constructor(d1) {
-    if (!d1) throw new Error('缺少 D1 数据库绑定（env.DB）');
-    this.d1 = d1;
+  constructor(driver) {
+    if (!driver) throw new Error('缺少数据库驱动');
+    this.driver = driver;
+    /** 便捷访问（部分调用方需要直接 prepare） */
+    this.d1 = driver;
+  }
+
+  get dialect() {
+    return this.driver.dialect;
   }
 
   async all(sql, ...params) {
-    const r = await this.d1.prepare(sql).bind(...params).all();
-    return r.results ?? [];
+    return this.driver.prepare(sql).bind(...params).all();
   }
 
   async first(sql, ...params) {
-    const r = await this.d1.prepare(sql).bind(...params).first();
-    return r ?? null;
+    return this.driver.prepare(sql).bind(...params).first();
   }
 
   async run(sql, ...params) {
-    const r = await this.d1.prepare(sql).bind(...params).run();
-    return { changes: r.meta?.changes ?? 0, lastRowId: r.meta?.last_row_id ?? null };
+    return this.driver.prepare(sql).bind(...params).run();
   }
 
-  /** 批量执行（D1 batch 会把多条语句打包成一次往返） */
+  prepare(sql) {
+    return this.driver.prepare(sql);
+  }
+
+  /** 批量执行（D1 会打包成一次往返；MySQL 走事务） */
   async batch(statements) {
-    return this.d1.batch(statements);
+    return this.driver.batch(statements);
+  }
+
+  async execScript(sql) {
+    return this.driver.execScript(sql);
+  }
+
+  /**
+   * 幂等 upsert：先 UPDATE，没命中再 INSERT。
+   * 并发下可能两个请求同时 UPDATE 失败并同时 INSERT，由唯一约束兜底，
+   * 调用方可捕获后忽略（isDuplicate）。
+   */
+  async upsert({ table, keyColumns, values, updateColumns = null }) {
+    const keys = Object.keys(values);
+    const where = keyColumns.map((k) => `${k} = ?`).join(' AND ');
+    const whereVals = keyColumns.map((k) => values[k]);
+    const updatable = (updateColumns || keys.filter((k) => !keyColumns.includes(k)));
+
+    if (updatable.length) {
+      const setSql = updatable.map((c) => `${c} = ?`).join(', ');
+      const r = await this.run(
+        `UPDATE ${table} SET ${setSql} WHERE ${where}`,
+        ...updatable.map((c) => values[c]), ...whereVals,
+      );
+      if (r.changes > 0) return { inserted: false, changes: r.changes };
+    }
+
+    const cols = keys.join(', ');
+    const marks = keys.map(() => '?').join(', ');
+    try {
+      const r = await this.run(
+        `INSERT INTO ${table} (${cols}) VALUES (${marks})`, ...keys.map((k) => values[k]),
+      );
+      return { inserted: true, lastRowId: r.lastRowId };
+    } catch (err) {
+      if (this.driver.isDuplicateError(err)) return { inserted: false, duplicate: true };
+      throw err;
+    }
+  }
+
+  isDuplicate(err) {
+    return this.driver.isDuplicateError(err);
   }
 
   // ------------------------------------------------------------ 便捷查询
@@ -148,10 +203,14 @@ export class Db {
     const day = today();
     let row = await this.first('SELECT * FROM ai_usage WHERE user_id = ? AND day = ?', userId, day);
     if (!row) {
-      await this.run(
-        'INSERT OR IGNORE INTO ai_usage (user_id, day, used, used_own_key, last_at) VALUES (?,?,0,0,?)',
-        userId, day, nowIso(),
-      );
+      try {
+        await this.run(
+          'INSERT INTO ai_usage (user_id, day, used, used_own_key, last_at) VALUES (?,?,0,0,?)',
+          userId, day, nowIso(),
+        );
+      } catch (err) {
+        if (!this.isDuplicate(err)) throw err;      // 并发下另一个请求刚插入，忽略
+      }
       row = await this.first('SELECT * FROM ai_usage WHERE user_id = ? AND day = ?', userId, day);
     }
     return row;
@@ -159,14 +218,29 @@ export class Db {
 
   async bumpUsage(userId, { ownKey }) {
     const day = today();
-    await this.run(
-      `INSERT INTO ai_usage (user_id, day, used, used_own_key, last_at) VALUES (?,?,?,?,?)
-         ON CONFLICT(user_id, day) DO UPDATE SET
-           used = used + excluded.used,
-           used_own_key = used_own_key + excluded.used_own_key,
-           last_at = excluded.last_at`,
-      userId, day, ownKey ? 0 : 1, ownKey ? 1 : 0, nowIso(),
+    const incUsed = ownKey ? 0 : 1;
+    const incOwn = ownKey ? 1 : 0;
+    // 先尝试累加；没有当天记录时再插一条（并发冲突忽略）
+    const r = await this.run(
+      `UPDATE ai_usage SET used = used + ?, used_own_key = used_own_key + ?, last_at = ?
+        WHERE user_id = ? AND day = ?`,
+      incUsed, incOwn, nowIso(), userId, day,
     );
+    if (r.changes > 0) return;
+    try {
+      await this.run(
+        'INSERT INTO ai_usage (user_id, day, used, used_own_key, last_at) VALUES (?,?,?,?,?)',
+        userId, day, incUsed, incOwn, nowIso(),
+      );
+    } catch (err) {
+      if (!this.isDuplicate(err)) throw err;
+      // 竞态：别人刚建了当天记录，补一次累加
+      await this.run(
+        `UPDATE ai_usage SET used = used + ?, used_own_key = used_own_key + ?, last_at = ?
+          WHERE user_id = ? AND day = ?`,
+        incUsed, incOwn, nowIso(), userId, day,
+      );
+    }
   }
 
   async sumUsageToday() {
@@ -183,11 +257,20 @@ export class Db {
   }
 
   async setSetting(key, value) {
-    await this.run(
-      `INSERT INTO settings (key, value, updated_at) VALUES (?,?,?)
-         ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at`,
-      key, value, nowIso(),
+    const r = await this.run(
+      'UPDATE settings SET value = ?, updated_at = ? WHERE key = ?', value, nowIso(), key,
     );
+    if (r.changes > 0) return;
+    try {
+      await this.run(
+        'INSERT INTO settings (key, value, updated_at) VALUES (?,?,?)', key, value, nowIso(),
+      );
+    } catch (err) {
+      if (!this.isDuplicate(err)) throw err;
+      await this.run(
+        'UPDATE settings SET value = ?, updated_at = ? WHERE key = ?', value, nowIso(), key,
+      );
+    }
   }
 
   async getSettings(keys) {
@@ -211,15 +294,32 @@ export class Db {
     }
     const stmts = [];
     for (const [kpId, v] of byKp) {
-      stmts.push(this.d1.prepare(
-        `INSERT INTO weak_stats (student_id, kp_id, total, wrong, updated_at) VALUES (?,?,?,?,?)
-           ON CONFLICT(student_id, kp_id) DO UPDATE SET
-             total = total + excluded.total,
-             wrong = wrong + excluded.wrong,
-             updated_at = excluded.updated_at`,
+      // 同样用「先 UPDATE 再 INSERT」的通用写法，避免 ON CONFLICT / ON DUPLICATE 差异
+      const r = await this.run(
+        `UPDATE weak_stats SET total = total + ?, wrong = wrong + ?, updated_at = ?
+          WHERE student_id = ? AND kp_id = ?`,
+        v.total, v.wrong, nowIso(), studentId, kpId,
+      );
+      if (r.changes > 0) continue;
+      stmts.push(this.prepare(
+        'INSERT INTO weak_stats (student_id, kp_id, total, wrong, updated_at) VALUES (?,?,?,?,?)',
       ).bind(studentId, kpId, v.total, v.wrong, nowIso()));
     }
-    if (stmts.length) await this.batch(stmts);
+    if (stmts.length) {
+      try {
+        await this.batch(stmts);
+      } catch (err) {
+        if (!this.isDuplicate(err)) throw err;
+        // 并发插入冲突：逐条重试为累加
+        for (const [kpId, v] of byKp) {
+          await this.run(
+            `UPDATE weak_stats SET total = total + ?, wrong = wrong + ?, updated_at = ?
+              WHERE student_id = ? AND kp_id = ?`,
+            v.total, v.wrong, nowIso(), studentId, kpId,
+          );
+        }
+      }
+    }
   }
 }
 

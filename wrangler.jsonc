@@ -1,0 +1,39 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "learnhub",
+  "main": "src/worker.js",
+  "compatibility_date": "2026-09-19",
+  "compatibility_flags": ["nodejs_compat"],
+
+  // 前端静态资源：public/ 目录不打包进 Worker，由 Cloudflare 全球边缘直接分发。
+  // run_worker_first=true 让请求先过 Worker，这样 /api/* 才会命中 Express 路由，
+  // 其余路径再由 Worker 转给 ASSETS 绑定。
+  "assets": {
+    "directory": "./public/",
+    "binding": "ASSETS",
+    "run_worker_first": true
+  },
+
+  // D1 数据库绑定。创建后把 database_id 换成你自己的（npx wrangler d1 create learnhub）
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "learnhub",
+      "database_id": "REPLACE_WITH_YOUR_D1_DATABASE_ID"
+    }
+  ],
+
+  // 非敏感配置放这里；密钥用 `npx wrangler secret put LEARNHUB_SECRET`
+  "vars": {
+    "LEARNHUB_DEFAULT_PROVIDER": "deepseek",
+    "LEARNHUB_DAILY_AI_LIMIT": "3",
+    "LEARNHUB_PLATFORM_API_KEY": ""
+  },
+
+  "observability": {
+    "enabled": true
+  },
+
+  // 免费版够用；如需限流/更细日志可自行加
+  "placement": { "mode": "smart" }
+}

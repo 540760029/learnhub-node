@@ -1,0 +1,27 @@
+﻿{
+  "name": "learnhub",
+  "version": "2.0.0",
+  "private": true,
+  "description": "课程学习与 AI 出题平台 —— Cloudflare Workers + D1（Fetch 原生，零运行时依赖）",
+  "type": "module",
+  "main": "src/worker.js",
+  "scripts": {
+    "dev": "node server.js",
+    "dev:file": "node server.js --file",
+    "dev:worker": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "test": "node --test test/api.test.js",
+    "db:local": "wrangler d1 execute learnhub --local --file=./migrations/0001_schema.sql",
+    "db:seed:local": "node scripts/make-seed-sql.js && wrangler d1 execute learnhub --local --file=./migrations/0002_seed.sql",
+    "db:remote": "wrangler d1 execute learnhub --remote --file=./migrations/0001_schema.sql",
+    "db:seed:remote": "wrangler d1 execute learnhub --remote --file=./migrations/0002_seed.sql",
+    "seed:sql": "node scripts/make-seed-sql.js",
+    "hash": "node scripts/hash-password.js"
+  },
+  "devDependencies": {
+    "wrangler": "^4.42.0"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

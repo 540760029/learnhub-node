@@ -12,15 +12,14 @@
     "dev:worker": "wrangler dev",
     "deploy": "wrangler deploy",
     "test": "node --test test/api.test.js",
-
     "sql:mysql": "node scripts/make-mysql-sql.js",
     "seed:sql": "node scripts/make-seed-sql.js",
     "hash": "node scripts/hash-password.js",
-
     "db:local": "wrangler d1 execute learnhub --local --file=./migrations/0001_schema.sql",
     "db:seed:local": "node scripts/make-seed-sql.js && wrangler d1 execute learnhub --local --file=./migrations/0002_seed.sql",
     "db:remote": "wrangler d1 execute learnhub --remote --file=./migrations/0001_schema.sql",
-    "db:seed:remote": "node scripts/make-seed-sql.js && wrangler d1 execute learnhub --remote --file=./migrations/0002_seed.sql"
+    "db:seed:remote": "node scripts/make-seed-sql.js && wrangler d1 execute learnhub --remote --file=./migrations/0002_seed.sql",
+    "db:migrate": "node scripts/migrate-mysql.js"
   },
   "optionalDependencies": {
     "mysql2": "^3.11.0"

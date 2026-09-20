@@ -37,7 +37,7 @@ CREATE TABLE IF NOT EXISTS courses (
   id INT NOT NULL AUTO_INCREMENT PRIMARY KEY,
   title LONGTEXT    NOT NULL,
   description LONGTEXT,
-  cover_emoji LONGTEXT    NOT NULL DEFAULT '📘',
+  cover_emoji VARCHAR(255)    NOT NULL DEFAULT '📘',
   join_code VARCHAR(255)    NOT NULL UNIQUE,
   teacher_id    INT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
   is_published  INT NOT NULL DEFAULT 1,
@@ -69,7 +69,7 @@ CREATE TABLE IF NOT EXISTS knowledge_points (
   id INT NOT NULL AUTO_INCREMENT PRIMARY KEY,
   course_id   INT NOT NULL REFERENCES courses(id) ON DELETE CASCADE,
   title LONGTEXT    NOT NULL,
-  content LONGTEXT    NOT NULL DEFAULT '',
+  content VARCHAR(255)    NOT NULL DEFAULT '',
   order_no    INT NOT NULL DEFAULT 0,
   scope VARCHAR(255)    NOT NULL DEFAULT 'course',
   created_by  INT REFERENCES users(id) ON DELETE SET NULL,
@@ -84,7 +84,7 @@ CREATE TABLE IF NOT EXISTS assignments (
   id INT NOT NULL AUTO_INCREMENT PRIMARY KEY,
   course_id  INT NOT NULL REFERENCES courses(id) ON DELETE CASCADE,
   title LONGTEXT    NOT NULL,
-  content LONGTEXT    NOT NULL DEFAULT '',
+  content VARCHAR(255)    NOT NULL DEFAULT '',
   due_at LONGTEXT,
   full_score DOUBLE    NOT NULL DEFAULT 100,
   created_at LONGTEXT    NOT NULL
@@ -95,7 +95,7 @@ CREATE TABLE IF NOT EXISTS submissions (
   id INT NOT NULL AUTO_INCREMENT PRIMARY KEY,
   assignment_id  INT NOT NULL REFERENCES assignments(id) ON DELETE CASCADE,
   student_id     INT NOT NULL REFERENCES users(id)       ON DELETE CASCADE,
-  content LONGTEXT    NOT NULL DEFAULT '',
+  content VARCHAR(255)    NOT NULL DEFAULT '',
   attachment_url LONGTEXT,
   score          DOUBLE,
   feedback LONGTEXT,
@@ -112,7 +112,7 @@ CREATE TABLE IF NOT EXISTS quiz_sets (
   id INT NOT NULL AUTO_INCREMENT PRIMARY KEY,
   course_id    INT NOT NULL REFERENCES courses(id) ON DELETE CASCADE,
   title LONGTEXT    NOT NULL,
-  source LONGTEXT    NOT NULL DEFAULT 'manual',   -- manual | ai
+  source VARCHAR(255)    NOT NULL DEFAULT 'manual',   -- manual | ai
   scope VARCHAR(255)    NOT NULL DEFAULT 'course',
   kp_ids LONGTEXT,                                -- JSON 数组
   created_by   INT REFERENCES users(id) ON DELETE SET NULL,
@@ -125,11 +125,11 @@ CREATE INDEX idx_quiz_scope  ON quiz_sets(scope);
 CREATE TABLE IF NOT EXISTS questions (
   id INT NOT NULL AUTO_INCREMENT PRIMARY KEY,
   quiz_set_id INT NOT NULL REFERENCES quiz_sets(id) ON DELETE CASCADE,
-  qtype LONGTEXT    NOT NULL DEFAULT 'single',    -- single | multi | judge | short
+  qtype VARCHAR(255)    NOT NULL DEFAULT 'single',    -- single | multi | judge | short
   stem LONGTEXT    NOT NULL,
   options LONGTEXT,                                 -- JSON 数组
-  answer LONGTEXT    NOT NULL DEFAULT '',
-  analysis LONGTEXT    NOT NULL DEFAULT '',
+  answer VARCHAR(255)    NOT NULL DEFAULT '',
+  analysis VARCHAR(255)    NOT NULL DEFAULT '',
   difficulty  INT NOT NULL DEFAULT 3,           -- 1~5
   kp_id       INT REFERENCES knowledge_points(id) ON DELETE SET NULL,
   order_no    INT NOT NULL DEFAULT 0
@@ -154,13 +154,13 @@ CREATE INDEX idx_att_stu  ON attempts(student_id);
 CREATE TABLE IF NOT EXISTS ai_usage (
   id INT NOT NULL AUTO_INCREMENT PRIMARY KEY,
   user_id      INT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-  day VARCHAR(255)    NOT NULL,                    -- YYYY-MM-DD (UTC)
+  `day` VARCHAR(255)    NOT NULL,                    -- YYYY-MM-DD (UTC)
   used         INT NOT NULL DEFAULT 0,          -- 用平台/教师 key
   used_own_key INT NOT NULL DEFAULT 0,          -- 用自带 key
   last_at LONGTEXT    NOT NULL,
-  UNIQUE (user_id, day)
+  UNIQUE (user_id, `day`)
 );
-CREATE INDEX idx_usage_user ON ai_usage(user_id, day);
+CREATE INDEX idx_usage_user ON ai_usage(user_id, `day`);
 
 -- --------------------------------------------------------------------- 薄弱点
 CREATE TABLE IF NOT EXISTS weak_stats (
@@ -178,14 +178,14 @@ CREATE INDEX idx_weak_stu ON weak_stats(student_id);
 CREATE TABLE IF NOT EXISTS announcements (
   id INT NOT NULL AUTO_INCREMENT PRIMARY KEY,
   course_id  INT NOT NULL REFERENCES courses(id) ON DELETE CASCADE,
-  content LONGTEXT    NOT NULL,
+  content VARCHAR(255)    NOT NULL,
   created_at LONGTEXT    NOT NULL
 );
 CREATE INDEX idx_ann_course ON announcements(course_id);
 
 -- --------------------------------------------------------------------- 平台配置
 CREATE TABLE IF NOT EXISTS settings (
-  key LONGTEXT PRIMARY KEY,
+  `key` VARCHAR(255) PRIMARY KEY,
   value LONGTEXT,
   updated_at LONGTEXT NOT NULL
 );

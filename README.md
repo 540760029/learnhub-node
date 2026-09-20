@@ -205,7 +205,84 @@ server {
 
 ---
 
-## 五、项目结构
+## 五、内网穿透：让外网访问本地服务（Cloudflare Tunnel）
+
+不想买服务器、只想把自己电脑上的服务临时/长期开放出去时用这条。
+
+> **实测结论（重要）**：`*.workers.dev` 在国内被拦（连接超时/重置），
+> 但 **`*.trycloudflare.com` 和自建域名的隧道都完全可用**（实测 HTTP 200，1.5–3.5 秒）。
+
+### 快速方式：临时隧道（无需账号、随机域名）
+
+```bash
+# 先让应用跑起来（任选一种数据库）
+npm run dev                      # 或 npm run dev:mysql
+
+# 另开一个窗口
+cloudflared tunnel --url http://127.0.0.1:8787
+```
+
+会得到形如 `https://xxx-yyy-zzz.trycloudflare.com` 的地址，**重启就变**，适合临时演示。
+
+### 正式方式：固定域名（需要域名托管在 Cloudflare）
+
+```bash
+# 1) 浏览器授权（会生成 ~/.cloudflared/cert.pem）
+cloudflared tunnel login
+
+# 2) 创建隧道
+cloudflared tunnel create learnhub
+
+# 3) 绑定域名
+cloudflared tunnel route dns learnhub learn.你的域名.com
+
+# 4) 写 ~/.cloudflared/config.yml
+```
+
+```yaml
+tunnel: <上一步输出的 Tunnel ID>
+credentials-file: C:\Users\<你>\.cloudflared\<Tunnel ID>.json
+ingress:
+  - hostname: learn.你的域名.com
+    service: http://127.0.0.1:8787
+  - service: http_status:404
+```
+
+```bash
+# 5) 启动
+cloudflared tunnel run learnhub
+```
+
+之后访问 `https://learn.你的域名.com` 即可，HTTPS 由 Cloudflare 自动提供。
+
+### ⚠️ Windows 上的一个坑（我踩过）
+
+PowerShell 的 `Set-Content -Encoding UTF8` 会写入 **BOM**，
+而 `cloudflared` 解析凭据 JSON / `config.yml` 时**不接受 BOM**，会报：
+
+```
+ERR Invalid JSON when parsing credentials file: invalid character 'ï' ...
+```
+
+用无 BOM 的方式写文件：
+
+```powershell
+[IO.File]::WriteAllText($path, $json, (New-Object Text.UTF8Encoding($false)))
+```
+
+或直接用 `cloudflared tunnel create` 生成的文件（它自己写的是无 BOM 的）。
+
+### 安全提醒
+
+隧道把服务**暴露到公网**，任何人拿到地址都能访问。上线前务必：
+
+- [ ] 改掉演示账号密码，或删掉演示账号
+- [ ] `LEARNHUB_SECRET` 换成随机值（默认值公开可伪造管理员令牌）
+- [ ] 确认没有把 `.dev.vars` / `.env` 提交进仓库
+
+---
+
+## 六、项目结构
 
 ```
 learnhub-node/
@@ -247,16 +324,27 @@ Node/Deno/Bun 也能直接跑。业务代码只依赖 `Request`/`Response`，
 
 ### 数据库差异怎么处理的
 
+下面每一条都是**在真 MySQL 8.1 上实测踩出来的**，不是预判：
+
 | 差异点 | 处理方式 |
 |---|---|
 | D1 是 binding、MySQL 是连接池 | `src/drivers.js` 统一成 `all/first/run/batch/execScript` 接口 |
-| `ON CONFLICT ... excluded.x` vs `ON DUPLICATE KEY ... VALUES(x)` | 改用**先 UPDATE、没命中再 INSERT** 的通用写法（`db.upsert`），两边语义一致 |
-| `AUTOINCREMENT` / `PRAGMA` / `TEXT` 索引 | `src/sql-dialect.js` 机械翻译，`npm run sql:mysql` 生成 MySQL schema |
-| 唯一约束错误码不同 | 驱动各自实现 `isDuplicateError`，业务层只调 `db.isDuplicate(err)` |
+| `ON CONFLICT … excluded.x` vs `ON DUPLICATE KEY … VALUES(x)` | 改用**先 UPDATE、没命中再 INSERT** 的通用写法（`db.upsert`），两边语义一致 |
+| `AUTOINCREMENT` / `PRAGMA` | `src/sql-dialect.js` 机械翻译成 `AUTO_INCREMENT` / 删除 |
+| **`TEXT` 列不能建索引**（`ER_BLOB_KEY_WITHOUT_LENGTH`） | 被索引/唯一/外键/主键引用的 `TEXT` 列自动转 `VARCHAR(255)` |
+| **`TEXT` 列不能有默认值**（`ERROR 1101`） | 带 `DEFAULT` 的列自动转 `VARCHAR(255)`（`cover_emoji` 踩过） |
+| **`key` 是 MySQL 保留字** | 转换器给 `settings.key` 自动加反引号（建表与运行时 SQL 都处理） |
+| **MySQL 不支持 `CREATE INDEX IF NOT EXISTS`** | 剥掉，改由 `scripts/migrate-mysql.js` 容忍「已存在」错误，保证脚本可重复执行 |
+| 唯一约束错误码不同 | 各驱动实现 `isDuplicateError`，业务层只调 `db.isDuplicate()` |
+
+> 转换器带自检：`npm run sql:mysql` 后若残留 `AUTOINCREMENT` / `PRAGMA` / `ON CONFLICT` 会报错退出。
+>
+> 迁移用 `npm run db:migrate`（需要 `LEARNHUB_DB_URL`），不要用 `mysql < file` ——
+> 后者遇到已存在的索引会中断。
 
 ---
 
-## 六、功能清单
+## 七、功能清单
 
 ### 管理员（平台级）
 - **🔑 平台 AI Key**：上传/更新平台默认 Key（AES-GCM 加密存库，**对全体用户生效**）
@@ -283,7 +371,7 @@ Node/Deno/Bun 也能直接跑。业务代码只依赖 `Request`/`Response`，
 
 ---
 
-## 七、AI 出题额度规则
+## 八、AI 出题额度规则
 
 平台默认 Key 由管理员在后台配置，**对全体用户生效**；额度上限也可随时调整。
 
@@ -302,7 +390,7 @@ Key 优先级：**自己的 Key → 管理员配置的平台 Key → 课程教�
 
 ---
 
-## 八、可见性（scope）模型
+## 九、可见性（scope）模型
 
 知识点与试题都带 `scope`，三档：
 
@@ -317,7 +405,7 @@ Key 优先级：**自己的 Key → 管理员配置的平台 Key → 课程教�
 
 ---
 
-## 九、环境变量
+## 十、环境变量
 
 Cloudflare 用 `wrangler.jsonc` 的 `vars` + `wrangler secret put`；
 国内云直接 `export` 或用 systemd 的 `Environment=`。
@@ -337,7 +425,7 @@ Cloudflare 用 `wrangler.jsonc` 的 `vars` + `wrangler secret put`；
 
 ---
 
-## 十、免费额度与国内访问实测
+## 十一、免费额度与国内访问实测
 
 **Cloudflare**：D1 免费版每天 500 万次读 / 10 万次写（存储 5 GB）；
 Workers 免费版每天 10 万次请求，静态资源不计费。自己/小圈子用完全够。
@@ -367,6 +455,6 @@ Workers 免费版每天 10 万次请求，静态资源不计费。自己/小圈�
 
 ---
 
-## 十一、许可证
+## 十二、许可证
 
 [MIT License](LICENSE) · Copyright (c) 2026 李小凡 (Xiaofan Li)

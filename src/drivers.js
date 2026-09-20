@@ -167,7 +167,25 @@ export function toMysqlSql(sql) {
     );
   }
   // SQLite 里 INSERT IGNORE 语义相同，MySQL 也认；其余语法通用
-  return out;
+  return quoteReservedForMysql(out);
+}
+
+/**
+ * 保留字列名加反引号。
+ *
+ * 只处理 `key` —— 它是我们 schema 里唯一撞上 MySQL 保留字的标识符
+ * （settings.key，出现在 SELECT / INSERT / UPDATE / WHERE 里）。
+ * 实测不加会直接 500（ER_PARSE_ERROR）。
+ *
+ * 注意区分：PRIMARY KEY / FOREIGN KEY 里的 KEY 必须保持原样，
+ * 所以这里只在 `key` 紧跟 , ) = 或 FROM/IN 边界时才加反引号。
+ */
+export function quoteReservedForMysql(sql) {
+  return sql
+    .replace(/\b(SELECT\s+|\()key(?=\s*[,)]|\s+FROM\b)/gi, '$1`key`')
+    .replace(/(\bINTO\s+\w+\s*\(\s*)key(?=\s*[,)])/gi, '$1`key`')
+    .replace(/\b(SET\s+|WHERE\s+|AND\s+|OR\s+)key(?=\s*=)/gi, '$1`key`')
+    .replace(/\bkey(?=\s+IN\s*\()/gi, '`key`');
 }
 
 class MysqlStatement {
